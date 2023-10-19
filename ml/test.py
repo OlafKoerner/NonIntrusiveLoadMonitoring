@@ -1,19 +1,34 @@
-"""Test a neural network to perform energy disaggregation.
+"""
+Test a neural network to perform energy disaggregation,
+i.e., given a sequence of electricity mains reading,
+the algorithm separates the mains into appliances.
 
-Copyright (c) 2022, 2023 Lindo St. Angel
+References:
+(1) Chaoyun Zhang, Mingjun Zhong, Zongzuo Wang, Nigel Goddard, and Charles Sutton.
+``Sequence-to-point learning with neural networks for nonintrusive load monitoring."
+Thirty-Second AAAI Conference on Artificial Intelligence (AAAI-18), Feb. 2-7, 2018.
+
+(2) https://arxiv.org/abs/1902.08835
+
+(3) https://github.com/MingjunZhong/transferNILM.
+
+Copyright (c) 2022 Lindo St. Angel
 """
 
 import os
 import argparse
 import socket
+from math import isclose
 
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from logger import Logger
-import nilm_metric
+from logger import log
+import nilm_metric as nm
 import common
+
+SAMPLE_PERIOD = 8 # Mains sample period in seconds.
 
 def get_arguments():
     parser = argparse.ArgumentParser(description='Predict appliance\
@@ -32,101 +47,76 @@ def get_arguments():
         type=str,
         default='./models',
         help='this is the directory to the trained models')
-    parser.add_argument('--model_arch',
+    parser.add_argument('--ckpt_dir',
         type=str,
-        default='cnn',
-        help='model architecture to test')
-    parser.add_argument(
-        '--save_dir',
+        default='checkpoints',
+        help='directory name of model checkpoint')
+    parser.add_argument('--save_results_dir',
         type=str,
-        default='/home/lindo/Develop/nilm/ml/models',
-        help='directory to save test results')
+        default='./results',
+        help='this is the directory to save the predictions')
+    parser.add_argument('--test_type',
+        type=str,
+        default='test',
+        help='Type of the test set to load: \
+            test -- test on the proper test set;\
+            train -- test on a already prepared slice of the train set;\
+            val -- test on the validation set;\
+            uk -- test on UK-DALE;\
+            redd -- test on REDD.')
     parser.add_argument('--plot', action='store_true',
-        help='ff set, plot the predicted appliance against ground truth')
+        help='If set, plot the predicted appliance against ground truth.')
+    parser.add_argument('--cnn',
+        type=str,
+        default='kettle',
+        help='The trained CNN for the appliance to load.')
     parser.add_argument('--crop',
         type=int,
         default=None,
-        help='use part of the dataset for testing')
+        help='To use part of the dataset for testing.')
     parser.add_argument('--batch_size',
         type=int,
-        default=1024,
-        help='sets test batch size')
+        default=1000,
+        help='Sets mini-batch size.')
     parser.set_defaults(plot=False)
     return parser.parse_args()
 
 if __name__ == '__main__':
+    log(f'Machine name: {socket.gethostname()}')
     args = get_arguments()
+    log('Arguments: ')
+    log(args)
+
     appliance_name = args.appliance_name
-    logger = Logger(os.path.join(args.save_dir,
-                                 appliance_name,
-                                 f'{appliance_name}_test_{args.model_arch}.log'))
-    logger.log(f'Machine name: {socket.gethostname()}')
-    logger.log('Arguments: ')
-    logger.log(args)
+    log('Appliance target is: ' + appliance_name)
 
     test_filename = common.find_test_filename(
-        args.datadir, appliance_name, 'test')
-    logger.log('File for test: ' + test_filename)
+        args.datadir, appliance_name, args.test_type)
+    log('File for test: ' + test_filename)
     test_file_path = os.path.join(args.datadir, appliance_name, test_filename)
-    logger.log('Loading from: ' + test_file_path)
+    log('Loading from: ' + test_file_path)
 
-    test_set_x, test_set_y, test_set_y_status = common.load_dataset(test_file_path,
-                                                                    args.crop)
-    logger.log(f'There are {test_set_x.size/10**6:.3f}M test samples.')
+    # offset parameter from window length
+    offset = int(
+        0.5 * (common.params_appliance[appliance_name]['windowlength'] - 1.0))
 
-    window_length = common.params_appliance[appliance_name]['window_length']
-    logger.log(f'Window length: {window_length} (samples)')
+    test_set_x, test_set_y = common.load_dataset(test_file_path, args.crop)
+    log(f'There are {test_set_x.size/10**6:.3f}M test samples.')
 
-    sample_period = common.SAMPLE_PERIOD
-    logger.log(f'Sample period: {sample_period} (s)')
-
-    max_power = common.params_appliance[appliance_name]['max_on_power']
-    logger.log(f'Appliance max power: {max_power} (W)')
-
-    threshold = common.params_appliance[appliance_name]['on_power_threshold']
-    logger.log(f'Appliance on threshold: {threshold} (W)')
-
-    train_app_std = common.params_appliance[appliance_name]['train_app_std']
-    train_agg_std = common.params_appliance[appliance_name]['train_agg_std']
-    test_app_mean = common.params_appliance[appliance_name]['test_app_mean']
-    test_agg_mean = common.params_appliance[appliance_name]['test_agg_mean']
-    train_agg_mean = common.params_appliance[appliance_name]['train_agg_mean']
-    train_app_mean = common.params_appliance[appliance_name]['train_app_mean']
-    logger.log(f'Train aggregate mean: {train_agg_mean} (W)')
-    logger.log(f'Train aggregate std: {train_agg_std} (W)')
-    logger.log(f'Train appliance mean: {train_app_mean} (W)')
-    logger.log(f'Train appliance std: {train_app_std} (W)')
-    logger.log(f'Test appliance mean: {test_app_mean} (W)')
-    logger.log(f'Test aggregate mean: {test_agg_mean} (W)')
-
-    alt_app_mean = common.params_appliance[appliance_name]['alt_app_mean']
-    alt_app_std = common.params_appliance[appliance_name]['alt_app_std']
-    logger.log(f'Alternative appliance mean: {alt_app_mean} (W)')
-    logger.log(f'Alternative appliance std: {alt_app_std} (W)')
-
-    alt_agg_mean = common.ALT_AGGREGATE_MEAN
-    alt_agg_std = common.ALT_AGGREGATE_STD
-    logger.log(f'Alternative aggregate mean: {alt_agg_mean} (W)')
-    logger.log(f'Alternative aggregate std: {alt_agg_std} (W)')
-
-    if common.USE_ALT_STANDARDIZATION:
-        logger.log('Using alt standardization.')
-    else:
-        logger.log('Using default standardization.')
+    # Ground truth is center of test target (y) windows.
+    ground_truth = test_set_y[offset:-offset]
 
     WindowGenerator = common.get_window_generator()
     test_provider = WindowGenerator(
-        dataset=(test_set_x, None, None),
-        window_length=window_length,
-        batch_size=args.batch_size,
+        dataset=(test_set_x, None),
         train=False,
         shuffle=False)
 
-    # Load best saved trained model for appliance.
+    # Load best checkpoint from saved trained model for appliance.
     model_file_path = os.path.join(
-        args.trained_model_dir, appliance_name, f'savemodel_{args.model_arch}')
-    logger.log(f'Loading saved model from {model_file_path}.')
-    model = tf.keras.models.load_model(model_file_path, compile=False)
+        args.trained_model_dir, appliance_name, args.ckpt_dir)
+    log(f'Loading saved model from {model_file_path}.')
+    model = tf.keras.models.load_model(model_file_path)
 
     model.summary()
 
@@ -136,91 +126,63 @@ if __name__ == '__main__':
         workers=24,
         use_multiprocessing=True)
 
-    # Find ground truth which is center of test target (y) windows.
-    # Calculate center sample index of a window.
-    center = int(0.5 * (window_length - 1))
-    # Calculate ground truth indices.
-    ground_truth_indices = np.arange(test_set_y.size - window_length) + center
-    # Grab only the center point of each window in target set.
-    ground_truth = test_set_y[ground_truth_indices]
-    # Adjust number of samples since predictions may not use a partial batch size.
-    #ground_truth = ground_truth[:test_prediction.size]
+    max_power = common.params_appliance[appliance_name]['max_on_power']
+    threshold = common.params_appliance[appliance_name]['on_power_threshold']
+    train_app_std = common.params_appliance[appliance_name]['train_app_std']
+    train_agg_std = common.params_appliance[appliance_name]['train_agg_std']
+    test_app_mean = common.params_appliance[appliance_name]['test_app_mean']
+    test_agg_mean = common.params_appliance[appliance_name]['test_agg_mean']
 
-    # De-normalize appliance power predictions.
-    if common.USE_APPLIANCE_NORMALIZATION:
-        app_mean = 0
-        app_std = common.params_appliance[appliance_name]['max_on_power']
-    else:
-        alt_app_mean = common.params_appliance[appliance_name]['alt_app_mean']
-        alt_app_std = common.params_appliance[appliance_name]['alt_app_std']
-        app_mean = alt_app_mean if common.USE_ALT_STANDARDIZATION else train_app_mean
-        app_std = alt_app_std if common.USE_ALT_STANDARDIZATION else train_app_std
-        logger.log('Using alt standardization.' if common.USE_ALT_STANDARDIZATION
-                    else 'Using default standardization.')
-    logger.log(f'De-normalizing predictions with mean = {app_mean} and std = {app_std}.')
-    prediction = test_prediction.flatten() * app_std + app_mean
-    # Remove negative energy predictions
-    prediction[prediction <= 0.0] = 0.0
+    log(f'train appliance std: {train_app_std}')
+    log(f'train aggregate std: {train_agg_std}')
+    log(f'test appliance mean: {test_app_mean}')
+    log(f'test aggregate mean: {test_agg_mean}')
 
-    # De-normalize ground truth.
-    ground_truth = ground_truth.flatten() * app_std + app_mean
-
-    # De-normalize aggregate data.
-    agg_mean = alt_agg_mean if common.USE_ALT_STANDARDIZATION else train_agg_mean
-    agg_std = alt_agg_std if common.USE_ALT_STANDARDIZATION else train_agg_std
-    aggregate = test_set_x.flatten() * agg_std + agg_mean
-
-    # Calculate ground truth and prediction status.
-    prediction_status = np.array(common.compute_status(prediction, appliance_name))
-    ground_truth_status = test_set_y_status[ground_truth_indices]
-    assert prediction_status.size == ground_truth_status.size
+    # De-normalize.
+    prediction = test_prediction * train_app_std + test_app_mean
+    prediction[prediction <= 0.0] = 0.0 #remove negative energy predictions
+    ground_truth = ground_truth * train_app_std + test_app_mean
 
     # Metric evaluation.
-    metrics = nilm_metric.NILMTestMetrics(target=ground_truth,
-                                          target_status=ground_truth_status,
-                                          prediction=prediction,
-                                          prediction_status=prediction_status,
-                                          sample_period=sample_period)
-    logger.log(f'True positives: {metrics.get_tp()}')
-    logger.log(f'True negatives: {metrics.get_tn()}')
-    logger.log(f'False positives: {metrics.get_fp()}')
-    logger.log(f'False negatives: {metrics.get_fn()}')
-    logger.log(f'Accuracy: {metrics.get_accuracy()}')
-    logger.log(f'MCC: {metrics.get_mcc()}')
-    logger.log(f'F1: {metrics.get_f1()}')
-    logger.log(f'MAE: {metrics.get_abs_error()["mean"]} (W)')
-    logger.log(f'NDE: {metrics.get_nde()}')
-    logger.log(f'SAE: {metrics.get_sae()}')
-    epd_gt = nilm_metric.get_epd(ground_truth * ground_truth_status, sample_period)
-    logger.log(f'Ground truth EPD: {epd_gt} (Wh)')
-    epd_pred = nilm_metric.get_epd(prediction * prediction_status, sample_period)
-    logger.log(f'Predicted EPD: {epd_pred} (Wh)')
-    logger.log(f'EPD Relative Error: {100.0 * (epd_pred - epd_gt) / epd_gt} (%)')
+    log('F1:{0}'.format(nm.get_F1(ground_truth.flatten(), prediction.flatten(), threshold)))
+    log('NDE:{0}'.format(nm.get_nde(ground_truth.flatten(), prediction.flatten())))
+    log('\nMAE: {:}\n    -std: {:}\n    -min: {:}\n    -max: {:}\n    -q1: {:}\n    -median: {:}\n    -q2: {:}'
+        .format(*nm.get_abs_error(ground_truth.flatten(), prediction.flatten())))
+    log('SAE: {:}'.format(nm.get_sae(ground_truth.flatten(), prediction.flatten(), SAMPLE_PERIOD)))
+    log('Energy per Day: {:}'.format(nm.get_Epd(ground_truth.flatten(), prediction.flatten(), SAMPLE_PERIOD)))
 
-    # Remove file extension for saving and plotting results.
-    test_filename = os.path.splitext(test_filename)[0]
+    # Save results.
+    savemains = test_set_x.flatten() * train_agg_std + test_agg_mean
+    savegt = ground_truth
+    savepred = prediction.flatten()
 
-    # Save raw results.
-    save_path = os.path.join(args.save_dir, appliance_name)
-    logger.log(f'Saving mains, ground truth and predictions to {save_path}.')
-    np.save(f'{save_path}/{test_filename}_pred_{args.model_arch}.npy', prediction)
-    np.save(f'{save_path}/{test_filename}_gt.npy', ground_truth)
-    np.save(f'{save_path}/{test_filename}_mains.npy', aggregate)
+    save_name = args.save_results_dir + '/' + appliance_name + '/' + test_filename
+    if not os.path.exists(save_name):
+        os.makedirs(save_name)
 
-    # Plot results.
+    np.save(save_name + '_pred.npy', savepred)
+    np.save(save_name + '_gt.npy', savegt)
+    np.save(save_name + '_mains.npy', savemains)
+
+    log('size: x={0}, y={0}, gt={0}'
+        .format(np.shape(savemains), np.shape(savepred), np.shape(savegt)))
+
+    # Plot.
     if args.plot:
-        pad = np.zeros(center)
         fig1 = plt.figure()
         ax1 = fig1.add_subplot(111)
-        ax1.plot(aggregate, color='#7f7f7f', linewidth=1.8)
-        ax1.plot(np.concatenate((pad, ground_truth, pad), axis=None),
-                 color='#d62728', linewidth=1.6)
-        ax1.plot(np.concatenate((pad, prediction, pad), axis=None),
-                 color='#1f77b4', linewidth=1.5)
+        ax1.plot(savemains[offset:-offset], color='#7f7f7f', linewidth=1.8)
+        ax1.plot(ground_truth, color='#d62728', linewidth=1.6)
+        ax1.plot(prediction,
+                 color='#1f77b4',
+                 #marker='o',
+                 linewidth=1.5)
         ax1.grid()
         ax1.set_title('Test results on {:}'
             .format(test_filename), fontsize=16, fontweight='bold', y=1.08)
         ax1.set_ylabel('W')
         ax1.legend(['aggregate', 'ground truth', 'prediction'])
+        #mng = plt.get_current_fig_manager()
+        #mng.resize(*mng.window.maxsize())
         plt.show()
         plt.close()

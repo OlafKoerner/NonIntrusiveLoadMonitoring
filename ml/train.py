@@ -3,39 +3,37 @@
 Given a sequence of electricity mains reading, the algorithm
 separates the mains into appliances.
 
-Copyright (c) 2022~2023 Lindo St. Angel
+References:
+(1) Chaoyun Zhang, Mingjun Zhong, Zongzuo Wang, Nigel Goddard, and Charles Sutton.
+``Sequence-to-point learning with neural networks for nonintrusive load monitoring."
+Thirty-Second AAAI Conference on Artificial Intelligence (AAAI-18), Feb. 2-7, 2018.
+
+(2) https://arxiv.org/abs/1902.08835
+
+(3) https://github.com/MingjunZhong/transferNILM.
+
+Copyright (c) 2022 Lindo St. Angel
 """
 
 import os
 import argparse
 import socket
 
+import numpy as np
 import tensorflow as tf
+import keras
+
 import tensorflow_model_optimization as tfmot
-from keras import mixed_precision
+#The model was trained on a tensorflow (Keras) version higher than the one you want to use to load the trained model. Find the compatible version of TensorFlow (Keras).
+#https://stackoverflow.com/questions/60562216/cant-load-keras-model-using-rectifiedadam-optimizer
+#from tensorflow_addons.optimizers import RectifiedAdam
+#tf.keras.optimizers.RectifiedAdam = RectifiedAdam
+
 import matplotlib.pyplot as plt
 
-import define_models
+from define_models import create_model
 from logger import log
-import common
-
-# Specify model architecture to use for training.
-MODEL_ARCH = 'transformer_fit'
-model_archs = dir(define_models)
-if MODEL_ARCH not in model_archs:
-    raise ValueError(f'Unknown model architecture: {MODEL_ARCH}!')
-else:
-    log(f'Using model architecture: {MODEL_ARCH}.')
-
-### DO NOT USE MIXED-PRECISION - CURRENTLY GIVES POOR MODEL ACCURACY ###
-# TODO: fix.
-# Run in mixed-precision mode for ~30% speedup vs TensorFloat-32
-# w/GPU compute capability = 8.6.
-#mixed_precision.set_global_policy('mixed_float16')
-
-# Set to True run in TF eager mode for debugging.
-# May have to reduce batch size <= 512 to avoid OOM.
-RUN_EAGERLY = False
+from common import load_dataset, myWindowGenerator
 
 def smooth_curve(points, factor=0.8):
     """Smooth a series of points given a smoothing factor."""
@@ -49,23 +47,23 @@ def smooth_curve(points, factor=0.8):
     return smoothed_points
 
 def plot(history, plot_name, plot_display, appliance_name):
-    """Save and display loss and mae plots."""
+    """Save and display mse and mae plots."""
     # Mean square error.
-    loss = history.history['loss']
-    val_loss = history.history['val_loss']
-    plot_epochs = range(1,len(loss)+1)
+    mse = history.history['mse']
+    val_mse = history.history['val_mse']
+    plot_epochs = range(1,len(mse)+1)
     plt.plot(
-        plot_epochs, smooth_curve(loss),
-        label='Smoothed Training Loss')
+        plot_epochs, smooth_curve(mse),
+        label='Smoothed Training MSE')
     plt.plot(
-        plot_epochs, smooth_curve(val_loss),
-        label='Smoothed Validation Loss')
+        plot_epochs, smooth_curve(val_mse),
+        label='Smoothed Validation MSE')
     plt.title(f'Training history for {appliance_name} ({plot_name})')
-    plt.ylabel('Loss (MSE)')
+    plt.ylabel('Mean Squared Error')
     plt.xlabel('Epoch')
     plt.legend()
     plot_filepath = os.path.join(
-        args.save_dir, appliance_name, f'{plot_name}_loss')
+        args.save_dir, appliance_name, f'{plot_name}_mse')
     log(f'Plot directory: {plot_filepath}')
     plt.savefig(fname=plot_filepath)
     if plot_display:
@@ -113,12 +111,14 @@ def get_arguments():
     parser.add_argument(
         '--batchsize',
         type=int,
-        default=1024,
+        #default=1000,
+        default=1,#OKO
         help='The batch size of training examples')
     parser.add_argument(
         '--n_epoch',
         type=int,
-        default=50,
+        #default=50,
+        default=2,#OKO
         help='The number of epochs.')
     parser.add_argument(
         '--prune_end_epoch',
@@ -153,42 +153,6 @@ def get_arguments():
     parser.set_defaults(train=False)
     return parser.parse_args()
 
-class TransformerCustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-    """Learning rate scheduler per Attention Is All You Need"""
-    def __init__(self, d_model, warmup_steps=4000):
-        super().__init__()
-
-        self.d_model = d_model
-        self.d_model_f = tf.cast(self.d_model, tf.float32)
-
-        self.warmup_steps = warmup_steps
-
-    def __call__(self, step):
-        step = tf.cast(step, dtype=tf.float32)
-        arg1 = tf.math.rsqrt(step)
-        arg2 = step * (self.warmup_steps ** -1.5)
-
-        return tf.math.rsqrt(self.d_model_f) * tf.math.minimum(arg1, arg2)
-    
-    def get_config(self):
-        config = {
-            'd_model': self.d_model,
-            'warmup_steps': self.warmup_steps}
-        return config
-    
-def decay_custom_schedule(
-        batches_per_epoch:int,
-        epochs_per_decay_step:int=5) -> tf.keras.optimizers.schedules:
-    """Decay lr at 1/t every 'epochs_per_decay_step' epochs.
-    
-    Typically set batches_per_epoch = training_provider.__len__()
-    """
-    return tf.keras.optimizers.schedules.InverseTimeDecay(
-        0.001,
-        decay_steps=batches_per_epoch * epochs_per_decay_step,
-        decay_rate=1,
-        staircase=False)
-
 if __name__ == '__main__':
     log(f'Machine name: {socket.gethostname()}')
     log(f'tf version: {tf.version.VERSION}')
@@ -198,13 +162,6 @@ if __name__ == '__main__':
 
     # The appliance to train on.
     appliance_name = args.appliance_name
-    log(f'Appliance name: {appliance_name}')
-
-    batch_size = args.batchsize
-    log(f'Batch size: {batch_size}')
-
-    window_length = common.params_appliance[appliance_name]['window_length']
-    log(f'Window length: {window_length}')
 
     # Path for training data.
     training_path = os.path.join(
@@ -216,87 +173,66 @@ if __name__ == '__main__':
         if 'validation' in filename:
             val_filename = filename
     # path for validation data
-    validation_path = os.path.join(args.datadir,appliance_name, val_filename)
+    validation_path = os.path.join(args.datadir,appliance_name,val_filename)
     log(f'Validation dataset: {validation_path}')
 
     model_filepath = os.path.join(args.save_dir, appliance_name)
     log(f'Model file path: {model_filepath}')
 
-    savemodel_filepath = os.path.join(model_filepath, f'savemodel_{MODEL_ARCH}')
-    log(f'Savemodel file path: {savemodel_filepath}')
+    checkpoint_filepath = os.path.join(model_filepath,'checkpoints')
+    log(f'Checkpoint file path: {checkpoint_filepath}')
 
     # Load datasets.
-    train_dataset = common.load_dataset(training_path, args.crop_train_dataset)
-    val_dataset = common.load_dataset(validation_path, args.crop_val_dataset)
+    train_dataset = load_dataset(training_path, args.crop_train_dataset)
+    val_dataset = load_dataset(validation_path, args.crop_val_dataset)
     num_train_samples = train_dataset[0].size
     log(f'There are {num_train_samples/10**6:.3f}M training samples.')
     num_val_samples = val_dataset[0].size
     log(f'There are {num_val_samples/10**6:.3f}M validation samples.')
 
     # Init window generator to provide samples and targets.
-    WindowGenerator = common.get_window_generator()
-    training_provider = WindowGenerator(
-        dataset=train_dataset,
-        batch_size=batch_size,
-        window_length=window_length,
-        p=None)# if MODEL_ARCH!='transformer' else 0.2)
-    validation_provider = WindowGenerator(
-        dataset=val_dataset,
-        batch_size=batch_size,
-        window_length=window_length,
-        shuffle=False)
+    #WindowGenerator = get_window_generator()
+    #training_provider = WindowGenerator(train_dataset)
+    #validation_provider = WindowGenerator(val_dataset)
+
+    training_provider = myWindowGenerator(dataset=train_dataset, train=True) #OKO
+    validation_provider = myWindowGenerator(dataset=val_dataset, train=False, shuffle=False) #OKO
 
     early_stopping = tf.keras.callbacks.EarlyStopping(
-        monitor='val_loss',
+        monitor='val_mse',
         patience=6,
         verbose=2)
 
     if args.train:
         log('Training model from scratch.')
 
-        if MODEL_ARCH == 'transformer':
-            raise ValueError('Must use model "transformer_fit" for training with .fit().')
-        elif MODEL_ARCH == 'transformer_fit':
-            # Calculate normalized threshold for appliance status determination.
-            threshold = common.params_appliance[appliance_name]['on_power_threshold']
-            max_on_power = common.params_appliance[appliance_name]['max_on_power']
-            threshold /= max_on_power
-            log(f'Normalized on power threshold: {threshold}')
+        model = create_model()
 
-            # Get L1 loss multiplier.
-            c0 = common.params_appliance[appliance_name]['c0']
-            log(f'L1 loss multiplier: {c0}')
+        model.summary()
 
-            model_depth = 256
-            model = define_models.transformer_fit(window_length=window_length, 
-                                                  threshold=threshold,
-                                                  d_model=model_depth,
-                                                  c0=c0)
-            #lr_schedule = TransformerCustomSchedule(d_model=model_depth)
-            lr_schedule = 1e-4
-        elif MODEL_ARCH == 'cnn':
-            model = define_models.cnn(window_length=window_length)
-            lr_schedule = 1e-4
-        elif MODEL_ARCH == 'fcn':
-            model = define_models.fcn(window_length=window_length)
-            lr_schedule = 1e-4
-        elif MODEL_ARCH == 'resnet':
-            model = define_models.resnet(window_length=window_length)
-            lr_schedule = 1e-4
+        # Decay lr at 1/t every 5 epochs.
+        batches_per_epoch = training_provider.__len__()
+        epochs_per_decay_step = 5
+        lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
+            0.001,
+            decay_steps=batches_per_epoch * epochs_per_decay_step,
+            decay_rate=1,
+            staircase=False)
 
         model.compile(
-            optimizer=tf.keras.optimizers.Adam(
+            optimizer=tf.keras.optimizers.Adam( #OKO
+            #optimizer=tf.keras.optimizers.legacy.Adam(
                 learning_rate=lr_schedule,
                 beta_1=0.9,
                 beta_2=0.999,
                 epsilon=1e-08),
+            run_eagerly = False,  #OKO: allows better debugging
             loss='mse',
-            metrics=['msle', 'mae'],
-            run_eagerly=RUN_EAGERLY)
+            metrics=['mse', 'msle', 'mae'])
 
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            filepath = savemodel_filepath,
-            monitor='val_loss',
+            filepath = checkpoint_filepath,
+            monitor='val_mse',
             verbose=1,
             save_best_only=True,
             mode='auto',
@@ -304,29 +240,74 @@ if __name__ == '__main__':
 
         callbacks = [early_stopping, checkpoint_callback]
 
-        history = model.fit(
+        #OKO: print all configs/weights before fit
+        print('before fit:')
+        for layer in model.layers: print(layer.get_config(), layer.get_weights())
+
+
+        history = model.fit(    # OKO hier crash 23-04-2023
             x=training_provider,
-            steps_per_epoch=None,
+            batch_size=training_provider.batch_size,
             epochs=args.n_epoch,
             callbacks=callbacks,
             validation_data=validation_provider,
             validation_steps=None,
-            workers=24,
+            workers=8,
             use_multiprocessing=True)
         
-        model.summary()
+        # OKO: print all configs/weights after fit
+        print('after fit:')
+        for layer in model.layers: print(layer.get_config(), layer.get_weights())
 
         plot(
             history,
-            plot_name=f'train_{MODEL_ARCH}',
+            plot_name='train',
             plot_display=args.plot,
             appliance_name=appliance_name)
+
+
+        #OKO save/load start...
+        # Calling `save('my_model.keras')` creates a zip archive `my_model.keras`.
+        #model.save("my_nilm_model.keras")
+
+        # It can be used to reconstruct the model identically.
+        #reconstructed_model = keras.models.load_model("my_nilm_model.keras")
+
+        # Let's check:
+        #np.testing.assert_allclose(
+        #    model.predict(validation_provider), reconstructed_model.predict(validation_provider)
+        #)
+        # OKO save/load stop.
+
+        # OKO visualize hidden layers. start...
+        num_samples = 3
+        ts_size = 599 #OKO: window size
+        f, axarr = plt.subplots(num_samples, 5)
+        f.set_size_inches(16, 6)
+
+        for row in range(num_samples):
+            test_ts = validation_provider.y[row:row + 1]
+
+            axarr[row][0].plot(np.squeeze(test_ts))
+            axarr[row][0].title.set_text('Prediction: ' + str(np.argmax(model.predict(test_ts))))
+
+            for i in range(3):
+                temp_ts = Model(inputs=model.input, outputs=model.get_layer(index=i).output).predict(test_ts).reshape(
+                    ts_size)
+                axarr[row][i + 1].plot(temp_ts, range(ts_size))
+                axarr[row][i + 1].title.set_text(str(i) + ':' + model.get_layer(index=i).name)
+
+            temp_img = Model(inputs=model.input, outputs=model.get_layer(index=3).output).predict(test_img).reshape(16,                                                                                                                  16,
+                                                                                                                    32)
+            axarr[row][4].imshow(temp_img[:, :, 2], cmap='gray')
+            axarr[row][4].title.set_text(str(3) + ':' + model.get_layer(index=3).name)
+        #OKO visualize hidden layers. end.
     elif args.qat:
         log('Fine-tuning pre-trained model with quantization aware training.')
 
         quantize_model = tfmot.quantization.keras.quantize_model
 
-        model = tf.keras.models.load_model(savemodel_filepath)
+        model = tf.keras.models.load_model(checkpoint_filepath)
 
         q_aware_model = quantize_model(model)
 
@@ -356,23 +337,24 @@ if __name__ == '__main__':
 
         history = q_aware_model.fit(
             x=training_provider,
+            batch_size=training_provider.batch_size,
             steps_per_epoch=None,
             epochs=args.n_epoch,
             callbacks=callbacks,
             validation_data=validation_provider,
             validation_steps=None,
-            workers=24,
+            workers=8,
             use_multiprocessing=True)
 
         plot(
             history,
-            plot_name=f'qat_{MODEL_ARCH}',
+            plot_name='qat',
             plot_display=args.plot,
             appliance_name=appliance_name)
     elif args.prune:
         log('Prune pre-trained model for on-device inference.')
 
-        model = tf.keras.models.load_model(savemodel_filepath)
+        model = tf.keras.models.load_model(checkpoint_filepath)
 
         # Compute end step to finish pruning after 15 epochs.
         end_step = (num_train_samples // args.batchsize) * args.prune_end_epoch
@@ -408,7 +390,7 @@ if __name__ == '__main__':
         model_for_pruning.summary()
 
         pruning_checkpoint_filepath = os.path.join(
-            model_filepath, f'pruning_checkpoints_{MODEL_ARCH}')
+            model_filepath,'pruning_checkpoints')
         log(f'Pruning checkpoint file path: {pruning_checkpoint_filepath}')
 
         pruning_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
@@ -427,32 +409,31 @@ if __name__ == '__main__':
 
         history = model_for_pruning.fit(
             x=training_provider,
+            batch_size=training_provider.batch_size,
             steps_per_epoch=None,
             epochs=args.prune_end_epoch,
             callbacks=pruning_callbacks,
             validation_data=validation_provider,
             validation_steps=None,
-            workers=24,
+            workers=8,
             use_multiprocessing=True)
 
         plot(
             history,
-            plot_name=f'prune_{MODEL_ARCH}',
+            plot_name='prune',
             plot_display=args.plot,
             appliance_name=appliance_name)
 
         model_for_pruning.summary()
 
-        pruned_model_filepath = os.path.join(
-            model_filepath, f'pruned_model_{MODEL_ARCH}')
+        pruned_model_filepath = os.path.join(model_filepath,'pruned_model')
         log(f'Final pruned model file path: {pruned_model_filepath}')
         model_for_pruning.save(pruned_model_filepath)
 
         model_for_export = tfmot.sparsity.keras.strip_pruning(model_for_pruning)
         model_for_export.summary()
 
-        pruned_model_for_export_filepath = os.path.join(
-            model_filepath, f'pruned_model_for_export_{MODEL_ARCH}')
+        pruned_model_for_export_filepath = os.path.join(model_filepath,'pruned_model_for_export')
         log(f'Pruned model for export file path: {pruned_model_for_export_filepath}')
         model_for_export.save(pruned_model_for_export_filepath)
     else:

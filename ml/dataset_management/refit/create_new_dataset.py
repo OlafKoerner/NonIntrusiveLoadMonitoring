@@ -14,8 +14,8 @@ import argparse
 import pandas as pd
 #import matplotlib.pyplot as plt
 
-DATA_DIRECTORY = '/home/lindo/Develop/nilm-datasets/REFIT/CLEAN_REFIT_081116/'
-SAVE_DIRECTORY = '/home/lindo/Develop/nilm/ml/dataset_management/refit'
+DATA_DIRECTORY = '/Users/Olaf/CLEAN_REFIT_081116/'
+SAVE_DIRECTORY = '/Users/Olaf/Documents/GitHub2/nilm/ml/dataset_management/refit'
 def get_arguments():
     parser = argparse.ArgumentParser(description='create new datasets for training')
     parser.add_argument('--data_dir', type=str, default=DATA_DIRECTORY,
