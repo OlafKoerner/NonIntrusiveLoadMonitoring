@@ -1,3 +1,6 @@
+# OKO added
+*.png
+
 .vscode/*
 *.log
 *.tflite
