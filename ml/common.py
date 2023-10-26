@@ -199,8 +199,10 @@ def load_dataset(file_name, crop=None) -> np.array:
 
     return WindowGenerator
 """
+global  WindowGenerator
+global get_window_generator
 
-class myWindowGenerator(tf.keras.utils.Sequence): #OKO
+class WindowGenerator(tf.keras.utils.Sequence): #OKO
     """ Generates windowed timeseries samples and targets.
 
     Attributes:
@@ -279,6 +281,26 @@ class myWindowGenerator(tf.keras.utils.Sequence): #OKO
         else:
             # Return only samples if in test mode.
             return samples
+
+def get_window_generator(keras_sequence=True):
+    """Wrapper to conditionally sublass WindowGenerator as Keras sequence.
+
+    The WindowGenerator is used in keras and non-keras applications and
+    so to make it useable across both it can be a subclass of a keras
+    sequence. This increases reusability throughout codebase.
+
+    Arguments:
+        keras_sequence: If true make WindowGenerator a subclass of
+        the keras sequence class.
+
+    Returns:
+        WindowGenerator class.
+    """
+
+#   if keras_sequence:
+#        from tensorflow import keras
+
+    return WindowGenerator
 
 def tflite_infer(interpreter, provider, num_eval, log=print) -> list:
     """Perform inference using a tflite model"""

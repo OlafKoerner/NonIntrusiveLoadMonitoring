@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 
 from define_models import create_model
 from logger import log
-from common import load_dataset, myWindowGenerator
+from common import load_dataset, get_window_generator
 
 def smooth_curve(points, factor=0.8):
     """Smooth a series of points given a smoothing factor."""
@@ -191,12 +191,12 @@ if __name__ == '__main__':
     log(f'There are {num_val_samples/10**6:.3f}M validation samples.')
 
     # Init window generator to provide samples and targets.
-    #WindowGenerator = get_window_generator()
-    #training_provider = WindowGenerator(train_dataset)
-    #validation_provider = WindowGenerator(val_dataset)
+    WindowGenerator = get_window_generator()
+    training_provider = WindowGenerator(dataset=train_dataset, train=True)
+    validation_provider = WindowGenerator(dataset=val_dataset, train=False, shuffle=False)
 
-    training_provider = myWindowGenerator(dataset=train_dataset, train=True) #OKO
-    validation_provider = myWindowGenerator(dataset=val_dataset, train=False, shuffle=False) #OKO
+    #training_provider = myWindowGenerator(dataset=train_dataset, train=True) #OKO
+    #validation_provider = myWindowGenerator(dataset=val_dataset, train=False, shuffle=False) #OKO
 
     early_stopping = tf.keras.callbacks.EarlyStopping(
         monitor='val_mse',
@@ -207,7 +207,6 @@ if __name__ == '__main__':
         log('Training model from scratch.')
 
         model = create_model()
-
         model.summary()
 
         # Decay lr at 1/t every 5 epochs.
@@ -241,8 +240,8 @@ if __name__ == '__main__':
         callbacks = [early_stopping, checkpoint_callback]
 
         #OKO: print all configs/weights before fit
-        print('before fit:')
-        for layer in model.layers: print(layer.get_config(), layer.get_weights())
+        #print('before fit:')
+        #for layer in model.layers: print(layer.get_config(), layer.get_weights())
 
 
         history = model.fit(    # OKO hier crash 23-04-2023
@@ -256,8 +255,8 @@ if __name__ == '__main__':
             use_multiprocessing=True)
         
         # OKO: print all configs/weights after fit
-        print('after fit:')
-        for layer in model.layers: print(layer.get_config(), layer.get_weights())
+        #print('after fit:')
+        #for layer in model.layers: print(layer.get_config(), layer.get_weights())
 
         plot(
             history,
@@ -268,7 +267,7 @@ if __name__ == '__main__':
 
         #OKO save/load start...
         # Calling `save('my_model.keras')` creates a zip archive `my_model.keras`.
-        #model.save("my_nilm_model.keras")
+        model.save("my_nilm_model.keras")
 
         # It can be used to reconstruct the model identically.
         #reconstructed_model = keras.models.load_model("my_nilm_model.keras")
@@ -280,6 +279,7 @@ if __name__ == '__main__':
         # OKO save/load stop.
 
         # OKO visualize hidden layers. start...
+        '''
         num_samples = 3
         ts_size = 599 #OKO: window size
         f, axarr = plt.subplots(num_samples, 5)
@@ -301,6 +301,7 @@ if __name__ == '__main__':
                                                                                                                     32)
             axarr[row][4].imshow(temp_img[:, :, 2], cmap='gray')
             axarr[row][4].title.set_text(str(3) + ':' + model.get_layer(index=3).name)
+        '''
         #OKO visualize hidden layers. end.
     elif args.qat:
         log('Fine-tuning pre-trained model with quantization aware training.')
