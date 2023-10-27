@@ -150,9 +150,9 @@ if __name__ == '__main__':
         return prediction
 
     predictions = {
-        appliance : prediction(
+        appliance : np.append(prediction(
             appliance, aggregate
-        ) for appliance in args.appliances
+        ), 0) for appliance in args.appliances #OKO append element to ensure same array size as timestamps
     }
 
     # Calculate metrics.
