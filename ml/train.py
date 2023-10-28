@@ -225,7 +225,7 @@ if __name__ == '__main__':
                 beta_1=0.9,
                 beta_2=0.999,
                 epsilon=1e-08),
-            run_eagerly = False,  #OKO: allows better debugging
+            run_eagerly = None,  #OKO: allows better debugging
             loss='mse',
             metrics=['mse', 'msle', 'mae'])
 
@@ -271,6 +271,7 @@ if __name__ == '__main__':
 
         # It can be used to reconstruct the model identically.
         #reconstructed_model = keras.models.load_model("my_nilm_model.keras")
+        #OKO this one works for predict line 112: tf.keras.models.load_model(model_file_path)
 
         # Let's check:
         #np.testing.assert_allclose(
