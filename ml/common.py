@@ -19,14 +19,19 @@ import tensorflow as tf #OKO
 params_appliance = {
     'kettle': {
         'windowlength': 599,
-        'on_power_threshold': 2000.0,
-        'max_on_power': 3998.0,
-        'train_agg_mean': 501.32453633286167,   #training aggregate mean
-        'train_agg_std': 783.0367822932175,     #training aggregate standard deviation
-        'train_app_mean': 16.137261776311778,   #training appliance mean
-        'train_app_std': 196.89790951996966,    #training appliance standard deviation
-        'test_app_mean': 23.155018918550294,    #test appliance mean
-        'test_agg_mean': 465.10226795866976     #test aggregate mean
+        #OKO out-comment those device specifc values. Fill with my data if needed...
+        #'on_power_threshold': 2000.0,
+        'on_power_threshold': 1000.0, #OKO
+        #'max_on_power': 3998.0,
+        #'train_agg_mean': 501.32453633286167,   #training aggregate mean
+        #'train_agg_std': 783.0367822932175,     #training aggregate standard deviation
+        'train_agg_std': 465.0948,     #OKO my training aggregate standard deviation for expresso
+        #'train_app_mean': 16.137261776311778,   #training appliance mean
+        'train_app_mean': 1018.5105,   #OKO my #training appliance mean
+        #'train_app_std': 196.89790951996966,    #training appliance standard deviation
+        'train_app_std': 78.997925,    #OKO my #training appliance standard deviation
+        #'test_app_mean': 23.155018918550294,    #test appliance mean
+        #'test_agg_mean': 465.10226795866976     #test aggregate mean
     },
     'microwave': {
         'windowlength': 599,
