@@ -102,7 +102,7 @@ if __name__ == '__main__':
     log(f'There are {aggregate.size/10**6:.3f}M test samples.')
 
     WindowGenerator = get_window_generator()
-    
+
     def prediction(appliance: str, input: np.ndarray) -> np.ndarray:
         """Make appliance prediction and return post-processed result."""
         log(f'Making prediction for {appliance}.')
@@ -138,22 +138,44 @@ if __name__ == '__main__':
         log(f'De-normalizing {appliance} prediction with:')
         log(f'train appliance mean: {train_app_mean}')
         log(f'train appliance std: {train_app_std}')
-        prediction = prediction * train_app_std + train_app_mean
 
+        #prediction = np.pad(prediction, (0, 100000 - 99401))  #OKO ensure same size as agg etc. for plot
+        #prediction = np.append(prediction, 0) #add one to reach 100k
         # Zero out negative power predictions.
-        prediction[prediction <= 0.0] = 0.0
+        prediction[prediction <= 0.0] = 0.0  #OKO moved up
 
         # Apply on-power thresholds.
-        if args.threshold_rt_preds:
+        if args.threshold_rt_preds:  #OKO moved up
             threshold = params_appliance[appliance]['on_power_threshold']
             prediction[prediction <= threshold] = 0.0
-        return prediction
 
-    predictions = {
-        appliance : np.append(prediction(
-            appliance, aggregate
-        ), 0) for appliance in args.appliances #OKO append element to ensure same array size as timestamps
-    }
+        predict_no_calib = prediction #OKO added
+        #prediction = prediction * train_app_std + train_app_mean
+        prediction = prediction * train_app_std * 40 #+ train_app_mean #OKO test
+
+        return prediction, predict_no_calib
+
+    for appliance in args.appliances:
+        predict, predict_no_calib = prediction(appliance, aggregate)
+        predictions = { appliance: predict }
+
+    d = date_times[offset:-offset-1]
+    r = aggregate[offset:-offset-1]
+    p1 = np.squeeze(predictions['kettle'])
+    p2 = np.squeeze(predict_no_calib)
+
+    #OKO save results
+    df_predictions = pd.DataFrame(  # OKO
+        {
+            'date_time': d,
+            'real_power': r,
+            'prediction': p1,
+            'predict_no_calib': p2
+        })
+
+    df_predictions.to_csv(
+        '/Users/Olaf/Documents/GitHub/NonIntrusiveLoadMonitoring/ml/dataset_management/my-house/garage_predictions.csv',
+        index=True)
 
     # Calculate metrics.
     # get_Epd returns a relative metric between two powers, so zero out one.
@@ -256,7 +278,7 @@ if __name__ == '__main__':
     fig.autofmt_xdate()
     # Plot appliance powers.
     for i, appliance in enumerate(args.appliances):
-        ax.plot(date_times[offset:-offset], predictions[appliance],
+        ax.plot(date_times[offset:-offset], np.append(p1, 0), #, np.append(p2, 0),
             color=color_names[i+1], linewidth=1.5,
             linestyle = line_styles[i+1], label=appliance)
     # Actually show plot.
