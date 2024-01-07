@@ -1,0 +1,10 @@
+jupyter
+pandas
+numpy
+matplotlib
+tensorflow
+tensorflow_model_optimization
+keras
+pydot
+pydotplus
+graphviz
