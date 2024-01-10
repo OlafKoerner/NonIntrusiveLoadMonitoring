@@ -1,4 +1,7 @@
 jupyter
+python-decouple
+pymysql
+datetime
 pandas
 numpy
 matplotlib
